@@ -29,7 +29,7 @@ static int update_length = 0;
 
 int remember_firmware_update(const char *type, const char *data, int length) {
     if (update_type != NULL || update_data != NULL) {
-        LOGE("多个固件镜像\n");
+        LOGE("Multiple firmware images\n");
         return -1;
     }
 
@@ -101,11 +101,11 @@ int maybe_install_firmware_update(const char *send_intent) {
     char *fail_image = ui_copy_image(
         BACKGROUND_ICON_FIRMWARE_ERROR, &width, &height, &bpp);
 
-    ui_print("正在写入 %s 镜像...\n", update_type);
+    ui_print("Writing %s image...\n", update_type);
     if (write_update_for_bootloader(
             update_data, update_length,
             width, height, bpp, busy_image, fail_image)) {
-        LOGE("无法写入 %s 镜像\n(%s)\n", update_type, strerror(errno));
+        LOGE("Can't write %s image\n(%s)\n", update_type, strerror(errno));
         format_volume("/cache");  // Attempt to clean cache up, at least.
         return -1;
     }
@@ -126,6 +126,6 @@ int maybe_install_firmware_update(const char *send_intent) {
     reboot(RB_AUTOBOOT);
 
     // Can't reboot?  WTF?
-    LOGE("无法重启\n");
+    LOGE("Can't reboot\n");
     return -1;
 }

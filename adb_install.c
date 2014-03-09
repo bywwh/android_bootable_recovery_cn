@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <errno.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
@@ -29,6 +30,7 @@
 #include "cutils/properties.h"
 #include "install.h"
 #include "common.h"
+#include "recovery_ui.h"
 #include "adb_install.h"
 #include "minadbd/adb.h"
 
@@ -36,7 +38,7 @@ static void
 set_usb_driver(int enabled) {
     int fd = open("/sys/class/android_usb/android0/enable", O_WRONLY);
     if (fd < 0) {
-        ui_print("无法打开驱动控制器: %s\n", strerror(errno));
+        ui_print("failed to open driver control: %s\n", strerror(errno));
         return;
     }
 
@@ -48,11 +50,11 @@ set_usb_driver(int enabled) {
     }
 
     if (status < 0) {
-        ui_print("无法设置驱动控制器: %s\n", strerror(errno));
+        ui_print("failed to set driver control: %s\n", strerror(errno));
     }
 
     if (close(fd) < 0) {
-        ui_print("无法关闭驱动控制器: %s\n", strerror(errno));
+        ui_print("failed to close driver control: %s\n", strerror(errno));
     }
 }
 
@@ -68,47 +70,74 @@ maybe_restart_adbd() {
     char value[PROPERTY_VALUE_MAX+1];
     int len = property_get("ro.debuggable", value, NULL);
     if (len == 1 && value[0] == '1') {
-        ui_print("正在重启 adbd...\n");
+        ui_print("Restarting adbd...\n");
         set_usb_driver(1);
         property_set("ctl.start", "adbd");
     }
 }
 
+struct sideload_waiter_data {
+    pid_t child;
+};
+
+void *adb_sideload_thread(void* v) {
+    struct sideload_waiter_data* data = (struct sideload_waiter_data*)v;
+
+    int status;
+    waitpid(data->child, &status, 0);
+    LOGI("sideload process finished\n");
+    
+    ui_cancel_wait_key();
+
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        ui_print("status %d\n", WEXITSTATUS(status));
+    }
+
+    LOGI("sideload thread finished\n");
+    return NULL;
+}
+
 int
 apply_from_adb() {
-
     stop_adbd();
     set_usb_driver(1);
 
-    ui_print("\n\nSideload模式开始...\n请从电脑端输入命令开始刷机\n"
-              "命令格式:\"adb sideload <文件名>\"...\n\n");
+    ui_print("\n\nSideload started ...\nNow send the package you want to apply\n"
+              "to the device with \"adb sideload <filename>\"...\n\n");
 
-    pid_t child;
-    if ((child = fork()) == 0) {
+    struct sideload_waiter_data data;
+    if ((data.child = fork()) == 0) {
         execl("/sbin/recovery", "recovery", "adbd", NULL);
         _exit(-1);
     }
-    int status;
-    // TODO(dougz): there should be a way to cancel waiting for a
-    // package (by pushing some button combo on the device).  For now
-    // you just have to 'adb sideload' a file that's not a valid
-    // package, like "/dev/null".
-    waitpid(child, &status, 0);
+    
+    pthread_t sideload_thread;
+    pthread_create(&sideload_thread, NULL, &adb_sideload_thread, &data);
+    
+    static const char* headers[] = {  "ADB Sideload",
+                                "",
+                                NULL
+    };
 
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        ui_print("状态 %d\n", WEXITSTATUS(status));
-    }
+    static char* list[] = { "Cancel sideload", NULL };
+    
+    get_menu_selection(headers, list, 0, 0);
 
     set_usb_driver(0);
     maybe_restart_adbd();
 
+    // kill the child
+    kill(data.child, SIGTERM);
+    pthread_join(sideload_thread, NULL);
+    ui_clear_key_queue();
+
     struct stat st;
     if (stat(ADB_SIDELOAD_FILENAME, &st) != 0) {
         if (errno == ENOENT) {
-            ui_print("未接收到刷机包.\n");
+            ui_print("No package received.\n");
             ui_set_background(BACKGROUND_ICON_ERROR);
         } else {
-            ui_print("读取刷机包时出现错误:\n  %s\n", strerror(errno));
+            ui_print("Error reading package:\n  %s\n", strerror(errno));
             ui_set_background(BACKGROUND_ICON_ERROR);
         }
         return INSTALL_ERROR;
@@ -119,8 +148,21 @@ apply_from_adb() {
 
     if (install_status != INSTALL_SUCCESS) {
         ui_set_background(BACKGROUND_ICON_ERROR);
-        ui_print("刷机已中止.\n");
+        ui_print("Installation aborted.\n");
     }
 
+#ifdef ENABLE_LOKI
+    else if (loki_support_enabled) {
+        ui_print("Checking if loki-fying is needed");
+        install_status = loki_check();
+        if (install_status != INSTALL_SUCCESS)
+            ui_set_background(BACKGROUND_ICON_ERROR);
+    }
+#endif
+
+    if (install_status == INSTALL_SUCCESS)
+        ui_set_background(BACKGROUND_ICON_NONE);
+
+    remove(ADB_SIDELOAD_FILENAME);
     return install_status;
 }

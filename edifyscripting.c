@@ -34,6 +34,7 @@
 
 #include <signal.h>
 #include <sys/wait.h>
+#include <libgen.h> // basename
 
 #include "bootloader.h"
 #include "common.h"
@@ -52,7 +53,9 @@
 #include "edify/expr.h"
 #include "mtdutils/mtdutils.h"
 #include "mmcutils/mmcutils.h"
-//#include "edify/parser.h"
+
+extern int yyparse();
+extern int yy_scan_bytes();
 
 Value* UIPrintFn(const char* name, State* state, int argc, Expr* argv[]) {
     char** args = ReadVarArgs(state, argc, argv);
@@ -86,7 +89,7 @@ Value* UIPrintFn(const char* name, State* state, int argc, Expr* argv[]) {
 
 Value* RunProgramFn(const char* name, State* state, int argc, Expr* argv[]) {
     if (argc < 1) {
-        return ErrorAbort(state, "%s() 需要最少 1 个参数", name);
+        return ErrorAbort(state, "%s() expects at least 1 arg", name);
     }
     char** args = ReadVarArgs(state, argc, argv);
     if (args == NULL) {
@@ -133,7 +136,7 @@ Value* RunProgramFn(const char* name, State* state, int argc, Expr* argv[]) {
 Value* FormatFn(const char* name, State* state, int argc, Expr* argv[]) {
     char* result = NULL;
     if (argc != 1) {
-        return ErrorAbort(state, "%s() 期望的参数为 1 个，但是调用时却使用了 %d 个", name, argc);
+        return ErrorAbort(state, "%s() expects 1 arg, got %d", name, argc);
     }
     
     char *path;
@@ -141,19 +144,19 @@ Value* FormatFn(const char* name, State* state, int argc, Expr* argv[]) {
         return NULL;
     }
     
-    ui_print("正在格式化 %s...\n", path);
+    ui_print("Formatting %s...\n", path);
     if (0 != format_volume(path)) {
         free(path);
         return StringValue(strdup(""));
     }
     
     if (strcmp(path, "/data") == 0 && has_datadata()) {
-        ui_print("正在格式化 /datadata...\n", path);
+        ui_print("Formatting /datadata...\n");
         if (0 != format_volume("/datadata")) {
             free(path);
             return StringValue(strdup(""));
         }
-        if (0 != format_volume("/sdcard/.android_secure")) {
+        if (0 != format_volume(get_android_secure_path())) {
             free(path);
             return StringValue(strdup(""));
         }
@@ -166,7 +169,7 @@ done:
 Value* BackupFn(const char* name, State* state, int argc, Expr* argv[]) {
     char* result = NULL;
     if (argc != 1) {
-        return ErrorAbort(state, "%s() 期望的参数为 1 个，但是调用时却使用了 %d 个", name, argc);
+        return ErrorAbort(state, "%s() expects 1 args, got %d", name, argc);
     }
     char* path;
     if (ReadArgs(state, argv, 1, &path) < 0) {
@@ -181,7 +184,7 @@ Value* BackupFn(const char* name, State* state, int argc, Expr* argv[]) {
 
 Value* RestoreFn(const char* name, State* state, int argc, Expr* argv[]) {
     if (argc < 1) {
-        return ErrorAbort(state, "%s() 需要最少 1 个参数", name);
+        return ErrorAbort(state, "%s() expects at least 1 arg", name);
     }
     char** args = ReadVarArgs(state, argc, argv);
     if (args == NULL) {
@@ -232,7 +235,7 @@ Value* RestoreFn(const char* name, State* state, int argc, Expr* argv[]) {
 Value* InstallZipFn(const char* name, State* state, int argc, Expr* argv[]) {
     char* result = NULL;
     if (argc != 1) {
-        return ErrorAbort(state, "%s() 期望的参数为 1 个，但是调用时却使用了 %d 个", name, argc);
+        return ErrorAbort(state, "%s() expects 1 args, got %d", name, argc);
     }
     char* path;
     if (ReadArgs(state, argv, 1, &path) < 0) {
@@ -248,7 +251,7 @@ Value* InstallZipFn(const char* name, State* state, int argc, Expr* argv[]) {
 Value* MountFn(const char* name, State* state, int argc, Expr* argv[]) {
     char* result = NULL;
     if (argc != 1) {
-        return ErrorAbort(state, "%s() 期望的参数为 1 个，但是调用时却使用了 %d 个", name, argc);
+        return ErrorAbort(state, "%s() expects 1 args, got %d", name, argc);
     }
     char* path;
     if (ReadArgs(state, argv, 1, &path) < 0) {
@@ -310,55 +313,6 @@ int run_script_from_buffer(char* script_data, int script_len, char* filename)
 
 
 #define EXTENDEDCOMMAND_SCRIPT "/cache/recovery/extendedcommand"
-
-int run_and_remove_extendedcommand()
-{
-    char tmp[PATH_MAX];
-    sprintf(tmp, "cp %s /tmp/%s", EXTENDEDCOMMAND_SCRIPT, basename(EXTENDEDCOMMAND_SCRIPT));
-    __system(tmp);
-    remove(EXTENDEDCOMMAND_SCRIPT);
-    int i = 0;
-    for (i = 20; i > 0; i--) {
-        ui_print("等待 SD 卡挂载 (%ds)\n", i);
-        if (ensure_path_mounted("/sdcard") == 0) {
-            ui_print("已挂载 SD 卡...\n");
-            break;
-        }
-        sleep(1);
-    }
-    remove("/sdcard/clockworkmod/.recoverycheckpoint");
-    if (i == 0) {
-        ui_print("等待 SD 卡超时... 仍然继续.");
-    }
-
-    ui_print("正在检查 SD 卡生成器...\n");
-    struct stat st;
-    if (stat("/sdcard/clockworkmod/.salted_hash", &st) != 0) {
-        ui_print("未找到 SD 卡生成器...\n");
-        if (volume_for_path("/emmc") != NULL) {
-            ui_print("正在检查内置 SD 卡生成器...\n");
-            ensure_path_unmounted("/sdcard");
-            if (ensure_path_mounted_at_mount_point("/emmc", "/sdcard") != 0) {
-                ui_print("未找到内置 SD 卡生成器... 仍然继续.\n");
-                // unmount everything, and remount as normal
-                ensure_path_unmounted("/emmc");
-                ensure_path_unmounted("/sdcard");
-
-                ensure_path_mounted("/sdcard");
-            }
-        }
-    }
-
-    sprintf(tmp, "/tmp/%s", basename(EXTENDEDCOMMAND_SCRIPT));
-    int ret;
-#ifdef I_AM_KOUSH
-    if (0 != (ret = before_run_script(tmp))) {
-        ui_print("处理 ROM Manager 脚本时出错。请检查你要执行的备份、还原或是刷机操作是使用 ROM Manager v4.4.0.0 或更高版本进行的.\n");
-        return ret;
-    }
-#endif
-    return run_script(tmp);
-}
 
 int extendedcommand_file_exists()
 {
@@ -429,10 +383,60 @@ int run_script(char* filename)
     // supposedly not necessary, but let's be safe.
     script_data[script_len] = '\0';
     fclose(file);
-    LOGI("执行脚本:\n");
+    LOGI("Running script:\n");
     LOGI("\n%s\n", script_data);
 
     int ret = run_script_from_buffer(script_data, script_len, filename);
     free(script_data);
     return ret;
+}
+
+int run_and_remove_extendedcommand()
+{
+    char* primary_path = get_primary_storage_path();
+    char tmp[PATH_MAX];
+    sprintf(tmp, "cp %s /tmp/%s", EXTENDEDCOMMAND_SCRIPT, basename(EXTENDEDCOMMAND_SCRIPT));
+    __system(tmp);
+    remove(EXTENDEDCOMMAND_SCRIPT);
+    int i = 0;
+    for (i = 20; i > 0; i--) {
+        ui_print("Waiting for SD Card to mount (%ds)\n", i);
+        if (ensure_path_mounted(primary_path) == 0) {
+            ui_print("SD Card mounted...\n");
+            break;
+        }
+        sleep(1);
+    }
+    remove("/sdcard/clockworkmod/.recoverycheckpoint");
+    if (i == 0) {
+        ui_print("Timed out waiting for SD card... continuing anyways.");
+    }
+
+    ui_print("Verifying SD Card marker...\n");
+    struct stat st;
+    if (stat("/sdcard/clockworkmod/.salted_hash", &st) != 0) {
+        ui_print("SD Card marker not found...\n");
+        if (volume_for_path("/emmc") != NULL) {
+            ui_print("Checking Internal SD Card marker...\n");
+            ensure_path_unmounted(primary_path);
+            if (ensure_path_mounted_at_mount_point("/emmc", primary_path) != 0) {
+                ui_print("Internal SD Card marker not found... continuing anyways.\n");
+                // unmount everything, and remount as normal
+                ensure_path_unmounted("/emmc");
+                ensure_path_unmounted(primary_path);
+
+                ensure_path_mounted(primary_path);
+            }
+        }
+    }
+
+    sprintf(tmp, "/tmp/%s", basename(EXTENDEDCOMMAND_SCRIPT));
+    int ret;
+#ifdef I_AM_KOUSH
+    if (0 != (ret = before_run_script(tmp))) {
+        ui_print("Error processing ROM Manager script. Please verify that you are performing the backup, restore, or ROM installation from ROM Manager v4.4.0.0 or higher.\n");
+        return ret;
+    }
+#endif
+    return run_script(tmp);
 }

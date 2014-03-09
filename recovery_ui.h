@@ -31,6 +31,7 @@ extern int device_recovery_start();
 // keys are already pressed.  Return true if the text display should
 // be toggled.
 extern int device_toggle_display(volatile char* key_pressed, int key_code);
+int get_allow_toggle_display();
 
 // Called in the input thread when a new key (key_code) is pressed.
 // *key_pressed is an array of KEY_MAX+1 bytes indicating which other
@@ -65,6 +66,14 @@ extern int device_perform_action(int which);
 // are erased after this returns (whether it returns success or not).
 int device_wipe_data();
 
+// ui_wait_key() special return codes
+/*
+#define REBOOT              -1 // ui_wait_key() timeout to reboot
+#define CANCEL              -2 // ui_cancel_wait_key()
+*/
+#define REFRESH             -3
+
+// return actions by ui_handle_key() for get_menu_selection()
 #define NO_ACTION           -1
 
 #define HIGHLIGHT_UP        -2
@@ -72,18 +81,18 @@ int device_wipe_data();
 #define SELECT_ITEM         -4
 #define GO_BACK             -5
 
+// main menu items for prompt_and_wait()
 #define ITEM_REBOOT          0
 #define ITEM_APPLY_EXT       1
 #define ITEM_APPLY_SDCARD    1  // historical synonym for ITEM_APPLY_EXT
-#define ITEM_APPLY_SIDELOAD  2
-#define ITEM_WIPE_DATA       3
-#define ITEM_WIPE_CACHE      4
+#define ITEM_APPLY_ZIP       1  // used for installing an update from a zip
+#define ITEM_WIPE_DATA       2
+#define ITEM_WIPE_CACHE      3
 // unused in cwr
 #define ITEM_APPLY_CACHE     4
-#define ITEM_NANDROID        5
-#define ITEM_PARTITION       6
-#define ITEM_ADVANCED        7
-#define ITEM_POWEROFF        8
+#define ITEM_NANDROID        4
+#define ITEM_PARTITION       5
+#define ITEM_ADVANCED        6
 
 // Header text to display above the main menu.
 extern char* MENU_HEADERS[];
@@ -95,14 +104,14 @@ extern char* MENU_ITEMS[];
 extern int ui_root_menu;
 
 int
-get_menu_selection(char** headers, char** items, int menu_only, int initial_selection);
+get_menu_selection(const char** headers, char** items, int menu_only, int initial_selection);
 
 void
 set_sdcard_update_bootloader_message();
 
 extern int ui_handle_key(int key, int visible);
 
-// Vibration toggle
-extern int vibration_enabled;
+// call a clean reboot
+void reboot_main_system(int cmd, int flags, char *arg);
 
 #endif

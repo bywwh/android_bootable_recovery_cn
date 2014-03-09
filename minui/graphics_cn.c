@@ -30,8 +30,15 @@
 
 #include <pixelflinger/pixelflinger.h>
 
-#include "font_10x18_cn.h"
-const unsigned cw_en=10;
+#include <string.h>//cn
+
+#ifdef BOARD_USE_CUSTOM_RECOVERY_FONT
+#include BOARD_USE_CUSTOM_RECOVERY_FONT
+#else
+#include "font_10x18.h"
+#endif
+
+//#include "font_18x18.h"//cn
 
 #include "minui.h"
 
@@ -47,13 +54,27 @@ const unsigned cw_en=10;
 #endif
 
 #define NUM_BUFFERS 2
-
+/*
 typedef struct {
     GGLSurface texture;
     unsigned cwidth;
     unsigned cheight;
     unsigned ascent;
 } GRFont;
+*/
+//cn
+static GGLSurface font_ftex;
+typedef struct {
+    GGLSurface texture;
+    unsigned offset[97];
+    void** fontdata;
+    unsigned count;
+    unsigned *unicodemap;
+    unsigned char *cwidth;
+    unsigned char *cheight;
+    unsigned ascent;
+} GRFont;
+//cn end
 
 static GRFont *gr_font = 0;
 static GGLContext *gr_context = 0;
@@ -62,30 +83,15 @@ static GGLSurface gr_framebuffer[NUM_BUFFERS];
 static GGLSurface gr_mem_surface;
 static unsigned gr_active_fb = 0;
 static unsigned double_buffering = 0;
+static int overscan_percent = OVERSCAN_PERCENT;
+static int overscan_offset_x = 0;
+static int overscan_offset_y = 0;
 
 static int gr_fb_fd = -1;
 static int gr_vt_fd = -1;
 
 static struct fb_var_screeninfo vi;
 static struct fb_fix_screeninfo fi;
-
-int getGBCharID(unsigned c1, unsigned c2)
-{
-	if (c1 >= 0xB0 && c1 <=0xF7 && c2>=0xA1 && c2<=0xFE)
-	{
-		return (c1-0xB0)*94+c2-0xA1;
-	}
-	return -1;
-}
-
-int getUNICharID(unsigned short unicode)
-{
-	int i;
-	for (i = 0; i < UNICODE_NUM; i++) {
-		if (unicode == unicodemap[i]) return i;
-	}
-	return -1;
-}
 
 static int get_framebuffer(GGLSurface *fb)
 {
@@ -151,6 +157,9 @@ static int get_framebuffer(GGLSurface *fb)
         close(fd);
         return -1;
     }
+
+    overscan_offset_x = vi.xres * overscan_percent / 100;
+    overscan_offset_y = vi.yres * overscan_percent / 100;
 
     fb->version = sizeof(*fb);
     fb->width = vi.xres;
@@ -226,27 +235,104 @@ void gr_color(unsigned char r, unsigned char g, unsigned char b, unsigned char a
     color[3] = ((a << 8) | a) + 1;
     gl->color4xv(gl, color);
 }
+//cn
+struct utf8_table {
+	int     cmask;
+	int     cval;
+	int     shift;
+	long    lmask;
+	long    lval;
+};
 
+static struct utf8_table utf8_table[] =
+{
+    {0x80,  0x00,   0*6,    0x7F,           0,         /* 1 byte sequence */},
+    {0xE0,  0xC0,   1*6,    0x7FF,          0x80,      /* 2 byte sequence */},
+    {0xF0,  0xE0,   2*6,    0xFFFF,         0x800,     /* 3 byte sequence */},
+    {0xF8,  0xF0,   3*6,    0x1FFFFF,       0x10000,   /* 4 byte sequence */},
+    {0xFC,  0xF8,   4*6,    0x3FFFFFF,      0x200000,  /* 5 byte sequence */},
+    {0xFE,  0xFC,   5*6,    0x7FFFFFFF,     0x4000000, /* 6 byte sequence */},
+    {0,						       /* end of table    */}
+};
+
+int
+utf8_mbtowc(wchar_t *p, const char *s, int n)
+{
+	wchar_t l;
+	int c0, c, nc;
+	struct utf8_table *t;
+
+	nc = 0;
+	c0 = *s;
+	l = c0;
+	for (t = utf8_table; t->cmask; t++) {
+		nc++;
+		if ((c0 & t->cmask) == t->cval) {
+			l &= t->lmask;
+			if (l < t->lval)
+				return -nc;
+			*p = l;
+			return nc;
+		}
+		if (n <= nc)
+			return 0;
+		s++;
+		c = (*s ^ 0x80) & 0xFF;
+		if (c & 0xC0)
+			return -nc;
+		l = (l << 6) | c;
+	}
+	return -nc;
+}
+
+int getCharID(const char* s, void* pFont)
+{
+	unsigned i, unicode;
+	GRFont *gfont = (GRFont*) pFont;
+	if (!gfont)  gfont = gr_font;
+	utf8_mbtowc(&unicode, s, strlen(s));
+	for (i = 0; i < gfont->count; i++)
+	{
+		if (unicode == gfont->unicodemap[i])
+		return i;
+	}
+	return 0;
+}
+//cn end
+/*
 int gr_measure(const char *s)
 {
     return gr_font->cwidth * strlen(s);
 }
+*/
+//cn
+int gr_measure(const char *s)
+{
+    GRFont* fnt = NULL;
+    int n, l;
+    wchar_t ch;
+     if (!fnt)   fnt = gr_font;
+    l = utf8_mbtowc(&ch, s, strlen(s));
+	if(l <= 0 ) return 0; 
+	n = fnt->cwidth[getCharID(s,NULL)];
+    return n;
+}
+//cn end
 
 void gr_font_size(int *x, int *y)
 {
     *x = gr_font->cwidth;
     *y = gr_font->cheight;
 }
-
-int gr_text(int x, int y, const char *s)
+/*
+int gr_text(int x, int y, const char *s, int bold)
 {
     GGLContext *gl = gr_context;
     GRFont *font = gr_font;
     unsigned off;
-	unsigned off2;
-	unsigned off3;
-	int id;
-	unsigned short unicode;
+
+    x += overscan_offset_x;
+    y += overscan_offset_y;
 
     y -= font->ascent;
 
@@ -257,56 +343,107 @@ int gr_text(int x, int y, const char *s)
     gl->enable(gl, GGL_TEXTURE_2D);
 
     while((off = *s++)) {
-		if (off < 0x80)
-		{
-		    off -= 32;
-		    if (off < 96) {
-				if ((x + cw_en) >= gr_fb_width()) return x;
-		        gl->texCoord2i(gl, (off * font->cwidth) - x, 0 - y);
-		        gl->recti(gl, x, y, x + cw_en, y + font->cheight);
-		    }
-		    x += cw_en;
-		}
-		else
-		{
-			if ((off & 0xF0) == 0xE0)
-			{
-				off2 = *s++;
-				off3 = *s++;
-				unicode = (off & 0x1F) << 12;
-				unicode |= (off2 & 0x3F) << 6;
-				unicode |= (off3 & 0x3F);
-				id = getUNICharID(unicode);
-				//LOGI("%X %X %X  %X  %d", off, off2, off3, unicode, id);
-				if (id >= 0) {
-					if ((x + font->cwidth) >= gr_fb_width()) return x;
-				    gl->texCoord2i(gl, ((id % 96) * font->cwidth) - x, (id / 96 + 1) * font->cheight - y);
-				    gl->recti(gl, x, y, x + font->cwidth, y + font->cheight);
-				    x += font->cwidth;
-				} else {
-				    x += font->cwidth;
-				}
-			} else {
-			    x += cw_en;
-			}
-		}
+        off -= 32;
+        if (off < 96) {
+            gl->texCoord2i(gl, (off * font->cwidth) - x, 0 - y);
+            gl->recti(gl, x, y, x + font->cwidth, y + font->cheight);
+        }
+        x += font->cwidth;
+    }
+
+    return x;
+}
+*/
+//cn
+int gr_text(int x, int y, const char *s, int bold)
+{
+    GGLContext *gl = gr_context;
+    GRFont *gfont = NULL;
+    unsigned off, width, height, n;
+    wchar_t ch;
+
+    /* Handle default font */
+    if (!gfont)  gfont = gr_font;
+    x += overscan_offset_x;
+    y += overscan_offset_y;
+    y -= gfont->ascent;
+    // fprintf(stderr, "gr_text: x=%d,y=%d,w=%s\n", x, y, s);
+    gl->texEnvi(gl, GGL_TEXTURE_ENV, GGL_TEXTURE_ENV_MODE, GGL_REPLACE);
+    gl->texGeni(gl, GGL_S, GGL_TEXTURE_GEN_MODE, GGL_ONE_TO_ONE);
+    gl->texGeni(gl, GGL_T, GGL_TEXTURE_GEN_MODE, GGL_ONE_TO_ONE);
+    gl->enable(gl, GGL_TEXTURE_2D);
+
+    while(*s) {
+        if(*((unsigned char*)(s)) < 0x20) {
+            s++;
+            continue;
+        }
+		off = getCharID(s,NULL);
+        n = utf8_mbtowc(&ch, s, strlen(s));
+        if(n <= 0)
+            break;
+        s += n;
+		width = gfont->cwidth[off];
+		height = gfont->cheight[off];
+        memcpy(&font_ftex, &gfont->texture, sizeof(font_ftex));
+        font_ftex.width = width;
+        font_ftex.height = height;
+        font_ftex.stride = width;
+        font_ftex.data = gfont->fontdata[off];
+        gl->bindTexture(gl, &font_ftex);
+	    gl->texCoord2i(gl, 0 - x, 0 - y);
+        gl->recti(gl, x, y, x + width, y + height);
+        x += width;
     }
 
     return x;
 }
 
-void gr_fill(int x, int y, int w, int h)
+//cn end
+
+void gr_texticon(int x, int y, gr_surface icon) {
+    if (gr_context == NULL || icon == NULL) {
+        return;
+    }
+    GGLContext* gl = gr_context;
+
+    x += overscan_offset_x;
+    y += overscan_offset_y;
+
+    gl->bindTexture(gl, (GGLSurface*) icon);
+    gl->texEnvi(gl, GGL_TEXTURE_ENV, GGL_TEXTURE_ENV_MODE, GGL_REPLACE);
+    gl->texGeni(gl, GGL_S, GGL_TEXTURE_GEN_MODE, GGL_ONE_TO_ONE);
+    gl->texGeni(gl, GGL_T, GGL_TEXTURE_GEN_MODE, GGL_ONE_TO_ONE);
+    gl->enable(gl, GGL_TEXTURE_2D);
+
+    int w = gr_get_width(icon);
+    int h = gr_get_height(icon);
+
+    gl->texCoord2i(gl, -x, -y);
+    gl->recti(gl, x, y, x+gr_get_width(icon), y+gr_get_height(icon));
+}
+
+void gr_fill(int x1, int y1, int x2, int y2)
 {
+    x1 += overscan_offset_x;
+    y1 += overscan_offset_y;
+
+    x2 += overscan_offset_x;
+    y2 += overscan_offset_y;
+
     GGLContext *gl = gr_context;
     gl->disable(gl, GGL_TEXTURE_2D);
-    gl->recti(gl, x, y, w, h);
+    gl->recti(gl, x1, y1, x2, y2);
 }
 
 void gr_blit(gr_surface source, int sx, int sy, int w, int h, int dx, int dy) {
-    if (gr_context == NULL) {
+    if (gr_context == NULL || source == NULL) {
         return;
     }
     GGLContext *gl = gr_context;
+
+    dx += overscan_offset_x;
+    dy += overscan_offset_y;
 
     gl->bindTexture(gl, (GGLSurface*) source);
     gl->texEnvi(gl, GGL_TEXTURE_ENV, GGL_TEXTURE_ENV_MODE, GGL_REPLACE);
@@ -330,7 +467,7 @@ unsigned int gr_get_height(gr_surface surface) {
     }
     return ((GGLSurface*) surface)->height;
 }
-
+/*
 static void gr_init_font(void)
 {
     GGLSurface *ftex;
@@ -359,6 +496,67 @@ static void gr_init_font(void)
     gr_font->cheight = font.cheight;
     gr_font->ascent = font.cheight - 2;
 }
+*/
+//cn 
+static void gr_init_font(void)
+{
+    GGLSurface *ftex;
+    unsigned char *bits;
+    unsigned char *in, data;
+    int bmp, pos;
+    unsigned i, d, n;
+    void** font_data;
+    unsigned char *width, *height;
+    gr_font = calloc(sizeof(*gr_font), 1);
+    ftex = &gr_font->texture;
+
+    font_data = (void**)malloc(font.count * sizeof(void*));
+    width = malloc(font.count);
+    height = malloc(font.count);
+    for(n = 0; n < font.count; n++) {
+		if (n<95) {
+			font_data[n] = malloc(font.ewidth*font.eheight);
+			memset(font_data[n], 0, font.ewidth*font.eheight);
+			width[n] = font.ewidth;
+			height[n] = font.eheight;
+		}
+		else {
+			font_data[n] = malloc(font.cwidth*font.cheight);
+			memset(font_data[n], 0, font.cwidth * font.cheight);
+			width[n] = font.cwidth;
+			height[n] = font.cheight;
+		}
+	}
+    d = 0;
+    in = font.rundata;
+    while((data = *in++)) {
+        n = data & 0x7f;
+        for(i = 0; i < n; i++, d++) {
+			if (d<95*font.ewidth*font.eheight) {
+				bmp = d/(font.ewidth*font.eheight);
+				pos = d%(font.ewidth*font.eheight);
+			}
+			else {
+				bmp = (d-95*font.ewidth*font.eheight)/(font.cwidth*font.cheight)+95;
+				pos = (d-95*font.ewidth*font.eheight)%(font.cwidth*font.cheight);
+			}
+            ((unsigned char*)(font_data[bmp]))[pos] = (data & 0x80) ? 0xff : 0;
+        }
+
+    }
+
+    ftex->version = sizeof(*ftex);
+    ftex->format = GGL_PIXEL_FORMAT_A_8;
+    gr_font->count = font.count;
+    gr_font->unicodemap = font.unicodemap;
+    gr_font->cwidth = width;
+    gr_font->cheight = height;
+    gr_font->fontdata = font_data;
+    gr_font->ascent = font.cheight;
+    //gr_font->ascent = 0;
+}
+
+//cn end
 
 int gr_init(void)
 {
@@ -403,6 +601,7 @@ int gr_init(void)
     return 0;
 }
 
+
 void gr_exit(void)
 {
     close(gr_fb_fd);
@@ -417,12 +616,12 @@ void gr_exit(void)
 
 int gr_fb_width(void)
 {
-    return gr_framebuffer[0].width;
+    return gr_framebuffer[0].width - 2*overscan_offset_x;
 }
 
 int gr_fb_height(void)
 {
-    return gr_framebuffer[0].height;
+    return gr_framebuffer[0].height - 2*overscan_offset_y;
 }
 
 gr_pixel *gr_fb_data(void)
@@ -432,9 +631,21 @@ gr_pixel *gr_fb_data(void)
 
 void gr_fb_blank(bool blank)
 {
+#ifdef RECOVERY_LCD_BACKLIGHT_PATH
+    int fd;
+
+    fd = open(RECOVERY_LCD_BACKLIGHT_PATH, O_RDWR);
+    if (fd < 0) {
+        perror("cannot open LCD backlight");
+        return;
+    }
+    write(fd, blank ? "000" : "127", 3);
+    close(fd);
+#else
     int ret;
 
     ret = ioctl(gr_fb_fd, FBIOBLANK, blank ? FB_BLANK_POWERDOWN : FB_BLANK_UNBLANK);
     if (ret < 0)
         perror("ioctl(): blank");
+#endif
 }

@@ -52,48 +52,48 @@ handle_firmware_update(char* type, char* filename, ZipArchive* zip) {
     if (strncmp(filename, "PACKAGE:", 8) == 0) {
         entry = mzFindZipEntry(zip, filename+8);
         if (entry == NULL) {
-            LOGE("无法在刷机包中找到 \"%s\" in package", filename+8);
+            LOGE("Failed to find \"%s\" in package", filename+8);
             return INSTALL_ERROR;
         }
         data_size = entry->uncompLen;
     } else {
         struct stat st_data;
         if (stat(filename, &st_data) < 0) {
-            LOGE("统计时出错 %s: %s\n", filename, strerror(errno));
+            LOGE("Error stat'ing %s: %s\n", filename, strerror(errno));
             return INSTALL_ERROR;
         }
         data_size = st_data.st_size;
     }
 
-    LOGI("类型为 %s; 大小为 %d; 文件为 is %s\n",
+    LOGI("type is %s; size is %d; file is %s\n",
          type, data_size, filename);
 
     char* data = malloc(data_size);
     if (data == NULL) {
-        LOGI("无法为固件数据分配 %d 字节的空间\n", data_size);
+        LOGI("Can't allocate %d bytes for firmware data\n", data_size);
         return INSTALL_ERROR;
     }
 
     if (entry) {
         if (mzReadZipEntry(zip, entry, data, data_size) == false) {
-            LOGE("无法读取刷机包中的 \"%s\" from package", filename+8);
+            LOGE("Failed to read \"%s\" from package", filename+8);
             return INSTALL_ERROR;
         }
     } else {
         FILE* f = fopen(filename, "rb");
         if (f == NULL) {
-            LOGE("无法打开 %s: %s\n", filename, strerror(errno));
+            LOGE("Failed to open %s: %s\n", filename, strerror(errno));
             return INSTALL_ERROR;
         }
         if (fread(data, 1, data_size, f) != data_size) {
-            LOGE("无法读取固件数据: %s\n", strerror(errno));
+            LOGE("Failed to read firmware data: %s\n", strerror(errno));
             return INSTALL_ERROR;
         }
         fclose(f);
     }
 
     if (remember_firmware_update(type, data, data_size)) {
-        LOGE("无法保存 %s 镜像\n", type);
+        LOGE("Can't store %s image\n", type);
         free(data);
         return INSTALL_ERROR;
     }
@@ -114,10 +114,10 @@ try_update_binary(const char *path, ZipArchive *zip) {
         const ZipEntry* update_script_entry =
                 mzFindZipEntry(zip, ASSUMED_UPDATE_SCRIPT_NAME);
         if (update_script_entry != NULL) {
-            ui_print("Amend 格式的脚本(update-script)现在已不被支持.\n");
-            ui_print("Amend 格式的脚本自 Android 1.5 起已被谷歌取消支持.\n");
-            ui_print("当使用高于 3.0 版本的 ClockworkMod 时，需要移除 Amend 格式的脚本.\n");
-            ui_print("请将脚本转换为 Edify 格式的脚本(updater-script 加 update-binary)以便做出可以使用的刷机包.\n");
+            ui_print("Amend scripting (update-script) is no longer supported.\n");
+            ui_print("Amend scripting was deprecated by Google in Android 1.5.\n");
+            ui_print("It was necessary to remove it when upgrading to the ClockworkMod 3.0 Gingerbread based recovery.\n");
+            ui_print("Please switch to Edify scripting (updater-script and update-binary) to create working update zip packages.\n");
             return INSTALL_UPDATE_BINARY_MISSING;
         }
 
@@ -130,16 +130,82 @@ try_update_binary(const char *path, ZipArchive *zip) {
     int fd = creat(binary, 0755);
     if (fd < 0) {
         mzCloseZipArchive(zip);
-        LOGE("无法创建 %s\n", binary);
+        LOGE("Can't make %s\n", binary);
         return 1;
     }
     bool ok = mzExtractZipEntryToFile(zip, binary_entry, fd);
     close(fd);
 
     if (!ok) {
-        LOGE("无法复制 %s\n", ASSUMED_UPDATE_BINARY_NAME);
+        LOGE("Can't copy %s\n", ASSUMED_UPDATE_BINARY_NAME);
         mzCloseZipArchive(zip);
         return 1;
+    }
+
+    /* Make sure the update binary is compatible with this recovery
+     *
+     * We're building this against 4.4's (or above) bionic, which
+     * has a different property namespace structure. Old updaters
+     * don't know how to deal with it, so if we think we got one
+     * of those, force the use of a fallback compatible copy and
+     * hope for the best
+     *
+     * if "set_perm_" is found, it's probably a regular updater
+     * instead of a custom one. And if "set_metadata_" isn't there,
+     * it's pre-4.4, which makes it incompatible
+     *
+     * Also, I hate matching strings in binary blobs */
+
+    FILE *updaterfile = fopen(binary, "rb");
+    char tmpbuf;
+    char setpermmatch[9] = { 's','e','t','_','p','e','r','m','_' };
+    char setmetamatch[13] = { 's','e','t','_','m','e','t','a','d','a','t','a','_' };
+    size_t pos = 0;
+    bool foundsetperm = false;
+    bool foundsetmeta = false;
+
+    if (updaterfile == NULL) {
+        LOGE("Can't find %s for validation\n", ASSUMED_UPDATE_BINARY_NAME);
+        return 1;
+    }
+    fseek(updaterfile, 0, SEEK_SET);
+    while (!feof(updaterfile)) {
+        fread(&tmpbuf, 1, 1, updaterfile);
+        if (!foundsetperm && pos < sizeof(setpermmatch) && tmpbuf == setpermmatch[pos]) {
+            pos++;
+            if (pos == sizeof(setpermmatch)) {
+                foundsetperm = true;
+                pos = 0;
+            }
+            continue;
+        }
+        if (!foundsetmeta && tmpbuf == setmetamatch[pos]) {
+            pos++;
+            if (pos == sizeof(setmetamatch)) {
+                foundsetmeta = true;
+                pos = 0;
+            }
+            continue;
+        }
+        /* None of the match loops got a continuation, reset the counter */
+        pos = 0;
+    }
+    fclose(updaterfile);
+
+    /* Found set_perm and !set_metadata, overwrite the binary with the fallback */
+    if (foundsetperm && !foundsetmeta) {
+        FILE *fallbackupdater = fopen("/res/updater.fallback", "rb");
+        FILE *updaterfile = fopen(binary, "wb");
+        char updbuf[1024];
+
+        LOGW("Using fallback updater for downgrade...\n");
+        while (!feof(fallbackupdater)) {
+           fread(&updbuf, 1, 1024, fallbackupdater);
+           fwrite(&updbuf, 1, 1024, updaterfile);
+        }
+        chmod(binary, 0755);
+        fclose(updaterfile);
+        fclose(fallbackupdater);
     }
 
     int pipefd[2];
@@ -192,7 +258,7 @@ try_update_binary(const char *path, ZipArchive *zip) {
         setenv("UPDATE_PACKAGE", path, 1);
         close(pipefd[0]);
         execv(binary, args);
-        fprintf(stdout, "出错:无法运行 %s (%s)\n", binary, strerror(errno));
+        fprintf(stdout, "E:Can't run %s (%s)\n", binary, strerror(errno));
         _exit(-1);
     }
     close(pipefd[1]);
@@ -225,7 +291,7 @@ try_update_binary(const char *path, ZipArchive *zip) {
 
             if (type != NULL && filename != NULL) {
                 if (firmware_type != NULL) {
-                    LOGE("忽略多个固件更新的操作");
+                    LOGE("ignoring attempt to do multiple firmware updates");
                 } else {
                     firmware_type = strdup(type);
                     firmware_filename = strdup(filename);
@@ -239,7 +305,7 @@ try_update_binary(const char *path, ZipArchive *zip) {
                 ui_print("\n");
             }
         } else {
-            LOGE("未知命令 [%s]\n", command);
+            LOGE("unknown command [%s]\n", command);
         }
     }
     fclose(from_child);
@@ -247,7 +313,7 @@ try_update_binary(const char *path, ZipArchive *zip) {
     int status;
     waitpid(pid, &status, 0);
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        LOGE("%s 中出错\n(状态 %d)\n", path, WEXITSTATUS(status));
+        LOGE("Error in %s\n(Status %d)\n", path, WEXITSTATUS(status));
         mzCloseZipArchive(zip);
         return INSTALL_ERROR;
     }
@@ -257,122 +323,70 @@ try_update_binary(const char *path, ZipArchive *zip) {
         mzCloseZipArchive(zip);
         return ret;
     }
+    mzCloseZipArchive(zip);
     return INSTALL_SUCCESS;
-}
-
-// Reads a file containing one or more public keys as produced by
-// DumpPublicKey:  this is an RSAPublicKey struct as it would appear
-// as a C source literal, eg:
-//
-//  "{64,0xc926ad21,{1795090719,...,-695002876},{-857949815,...,1175080310}}"
-//
-// (Note that the braces and commas in this example are actual
-// characters the parser expects to find in the file; the ellipses
-// indicate more numbers omitted from this example.)
-//
-// The file may contain multiple keys in this format, separated by
-// commas.  The last key must not be followed by a comma.
-//
-// Returns NULL if the file failed to parse, or if it contain zero keys.
-static RSAPublicKey*
-load_keys(const char* filename, int* numKeys) {
-    RSAPublicKey* out = NULL;
-    *numKeys = 0;
-
-    FILE* f = fopen(filename, "r");
-    if (f == NULL) {
-        LOGE("opening %s: %s\n", filename, strerror(errno));
-        goto exit;
-    }
-
-    int i;
-    bool done = false;
-    while (!done) {
-        ++*numKeys;
-        out = realloc(out, *numKeys * sizeof(RSAPublicKey));
-        RSAPublicKey* key = out + (*numKeys - 1);
-        if (fscanf(f, " { %i , 0x%x , { %u",
-                   &(key->len), &(key->n0inv), &(key->n[0])) != 3) {
-            goto exit;
-        }
-        if (key->len != RSANUMWORDS) {
-            LOGE("key length (%d) does not match expected size\n", key->len);
-            goto exit;
-        }
-        for (i = 1; i < key->len; ++i) {
-            if (fscanf(f, " , %u", &(key->n[i])) != 1) goto exit;
-        }
-        if (fscanf(f, " } , { %u", &(key->rr[0])) != 1) goto exit;
-        for (i = 1; i < key->len; ++i) {
-            if (fscanf(f, " , %u", &(key->rr[i])) != 1) goto exit;
-        }
-        fscanf(f, " } } ");
-
-        // if the line ends in a comma, this file has more keys.
-        switch (fgetc(f)) {
-            case ',':
-                // more keys to come.
-                break;
-
-            case EOF:
-                done = true;
-                break;
-
-            default:
-                LOGE("unexpected character between keys\n");
-                goto exit;
-        }
-    }
-
-    fclose(f);
-    return out;
-
-exit:
-    if (f) fclose(f);
-    free(out);
-    *numKeys = 0;
-    return NULL;
 }
 
 static int
 really_install_package(const char *path)
 {
     ui_set_background(BACKGROUND_ICON_INSTALLING);
-    ui_print("正在查找刷机包...\n");
+    ui_print("Finding update package...\n");
     ui_show_indeterminate_progress();
-    LOGI("刷机包位置: %s\n", path);
+
+    // Resolve symlink in case legacy /sdcard path is used
+    // Requires: symlink uses absolute path
+    char new_path[PATH_MAX];
+    if (strlen(path) > 1) {
+        char *rest = strchr(path + 1, '/');
+        if (rest != NULL) {
+            int readlink_length;
+            int root_length = rest - path;
+            char *root = malloc(root_length + 1);
+            strncpy(root, path, root_length);
+            root[root_length] = 0;
+            readlink_length = readlink(root, new_path, PATH_MAX);
+            if (readlink_length > 0) {
+                strncpy(new_path + readlink_length, rest, PATH_MAX - readlink_length);
+                path = new_path;
+            }
+            free(root);
+        }
+    }
+
+    LOGI("Update location: %s\n", path);
 
     if (ensure_path_mounted(path) != 0) {
-        LOGE("无法挂载 %s\n", path);
+        LOGE("Can't mount %s\n", path);
         return INSTALL_CORRUPT;
     }
 
-    ui_print("正在打开刷机包...\n");
+    ui_print("Opening update package...\n");
 
     int err;
 
     if (signature_check_enabled) {
         int numKeys;
-        RSAPublicKey* loadedKeys = load_keys(PUBLIC_KEYS_FILE, &numKeys);
+        Certificate* loadedKeys = load_keys(PUBLIC_KEYS_FILE, &numKeys);
         if (loadedKeys == NULL) {
-            LOGE("无法载入密钥\n");
+            LOGE("Failed to load keys\n");
             return INSTALL_CORRUPT;
         }
-        LOGI("%d 个密钥已从 %s 中载入\n", numKeys, PUBLIC_KEYS_FILE);
+        LOGI("%d key(s) loaded from %s\n", numKeys, PUBLIC_KEYS_FILE);
 
         // Give verification half the progress bar...
-        ui_print("正在校验刷机包...\n");
+        ui_print("Verifying update package...\n");
         ui_show_progress(
                 VERIFICATION_PROGRESS_FRACTION,
                 VERIFICATION_PROGRESS_TIME);
 
         err = verify_file(path, loadedKeys, numKeys);
         free(loadedKeys);
-        LOGI("verify_file 返回 %d\n", err);
+        LOGI("verify_file returned %d\n", err);
         if (err != VERIFY_SUCCESS) {
-            LOGE("签名校验失败\n");
+            LOGE("signature verification failed\n");
             ui_show_text(1);
-            if (!confirm_selection("未签名的安装包?", "是的 - 安装未签名的安装包"))
+            if (!confirm_selection("Install Untrusted Package?", "Yes - Install untrusted zip"))
                 return INSTALL_CORRUPT;
         }
     }
@@ -382,13 +396,13 @@ really_install_package(const char *path)
     ZipArchive zip;
     err = mzOpenZipArchive(path, &zip);
     if (err != 0) {
-        LOGE("无法打开 %s\n(%s)\n", path, err != -1 ? strerror(err) : "已损坏");
+        LOGE("Can't open %s\n(%s)\n", path, err != -1 ? strerror(err) : "bad");
         return INSTALL_CORRUPT;
     }
 
     /* Verify and install the contents of the package.
      */
-    ui_print("正在刷入刷机包...\n");
+    ui_print("Installing update...\n");
     return try_update_binary(path, &zip);
 }
 
@@ -400,7 +414,7 @@ install_package(const char* path)
         fputs(path, install_log);
         fputc('\n', install_log);
     } else {
-        LOGE("无法打开 last_install: %s\n", strerror(errno));
+        LOGE("failed to open last_install: %s\n", strerror(errno));
     }
     int result = really_install_package(path);
     if (install_log) {

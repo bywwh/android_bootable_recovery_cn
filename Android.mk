@@ -1,43 +1,78 @@
+ifneq ($(WITH_SIMPLE_RECOVERY),true)
+
 LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 
 commands_recovery_local_path := $(LOCAL_PATH)
 # LOCAL_CPP_EXTENSION := .c
 
+ifeq ($(RECOVERY_LANGUAGE_CN),true)
 LOCAL_SRC_FILES := \
-    recovery.c \
+	adb_install_cn.c \
+	default_recovery_ui_cn.c \
+	edifyscripting_cn.c \
+	extendedcommands_cn.c \
+	firmware_cn.c \
+	install_cn.c \
+	nandroid_cn.c\
+	recovery_cn.c \
+	ui_cn.c \
     bootloader.c \
-    install.c \
-    roots.c \
-    ui.c \
     mounts.c \
-    extendedcommands.c \
-    nandroid.c \
-    ../../system/core/toolbox/reboot.c \
-    firmware.c \
-    edifyscripting.c \
-    setprop.c \
-    default_recovery_ui.c \
+    prop.c \
+    reboot.c \
+    roots.c \
+    verifier.c \
+    ../../system/vold/vdc.c \
+    ../../system/core/toolbox/dynarray.c \
+    ../../system/core/toolbox/newfs_msdos.c
+else
+LOCAL_SRC_FILES := \
     adb_install.c \
-    verifier.c
+    default_recovery_ui.c \
+    edifyscripting.c \
+    extendedcommands.c \
+    firmware.c \
+    install.c \
+    nandroid.c \
+    recovery.c \
+    ui.c \
+    bootloader.c \
+    mounts.c \
+    prop.c \
+    reboot.c \
+    roots.c \
+    verifier.c \
+    ../../system/vold/vdc.c \
+    ../../system/core/toolbox/dynarray.c \
+    ../../system/core/toolbox/newfs_msdos.c
+endif
 
 ADDITIONAL_RECOVERY_FILES := $(shell echo $$ADDITIONAL_RECOVERY_FILES)
 LOCAL_SRC_FILES += $(ADDITIONAL_RECOVERY_FILES)
 
+LOCAL_ADDITIONAL_DEPENDENCIES += updater.fallback
+
 LOCAL_MODULE := recovery
 
 LOCAL_FORCE_STATIC_EXECUTABLE := true
+
+RECOVERY_FSTAB_VERSION := 2
 
 ifdef I_AM_KOUSH
 RECOVERY_NAME := ClockworkMod Recovery
 LOCAL_CFLAGS += -DI_AM_KOUSH
 else
 ifndef RECOVERY_NAME
-RECOVERY_NAME := Bambook中文恢复系统
+ifeq ($(RECOVERY_LANGUAGE_CN),true)
+RECOVERY_NAME := 中文恢复系统
+else
+RECOVERY_NAME := CWM-based Recovery
+endif
 endif
 endif
 
-RECOVERY_VERSION := $(RECOVERY_NAME)
+RECOVERY_VERSION := $(RECOVERY_NAME) v6.0.4.7
 
 LOCAL_CFLAGS += -DRECOVERY_VERSION="$(RECOVERY_VERSION)"
 RECOVERY_API_VERSION := 2
@@ -58,7 +93,7 @@ BOARD_RECOVERY_CHAR_HEIGHT := $(shell echo $(BOARD_USE_CUSTOM_RECOVERY_FONT) | c
 
 LOCAL_CFLAGS += -DBOARD_RECOVERY_CHAR_WIDTH=$(BOARD_RECOVERY_CHAR_WIDTH) -DBOARD_RECOVERY_CHAR_HEIGHT=$(BOARD_RECOVERY_CHAR_HEIGHT)
 
-BOARD_RECOVERY_DEFINES := BOARD_HAS_NO_SELECT_BUTTON BOARD_UMS_LUNFILE BOARD_RECOVERY_ALWAYS_WIPES BOARD_RECOVERY_HANDLES_MOUNT BOARD_TOUCH_RECOVERY RECOVERY_EXTEND_NANDROID_MENU TARGET_USE_CUSTOM_LUN_FILE_PATH
+BOARD_RECOVERY_DEFINES := BOARD_RECOVERY_SWIPE BOARD_HAS_NO_SELECT_BUTTON BOARD_UMS_LUNFILE BOARD_RECOVERY_ALWAYS_WIPES BOARD_RECOVERY_HANDLES_MOUNT BOARD_TOUCH_RECOVERY RECOVERY_EXTEND_NANDROID_MENU TARGET_USE_CUSTOM_LUN_FILE_PATH TARGET_DEVICE TARGET_RECOVERY_FSTAB
 
 $(foreach board_define,$(BOARD_RECOVERY_DEFINES), \
   $(if $($(board_define)), \
@@ -68,9 +103,16 @@ $(foreach board_define,$(BOARD_RECOVERY_DEFINES), \
 
 LOCAL_STATIC_LIBRARIES :=
 
-LOCAL_CFLAGS += -DUSE_EXT4
-LOCAL_C_INCLUDES += system/extras/ext4_utils
-LOCAL_STATIC_LIBRARIES += libext4_utils libz
+LOCAL_CFLAGS += -DUSE_EXT4 -DMINIVOLD
+LOCAL_C_INCLUDES += system/extras/ext4_utils system/core/fs_mgr/include external/fsck_msdos
+LOCAL_C_INCLUDES += system/vold
+
+LOCAL_STATIC_LIBRARIES += libext4_utils_static libz libsparse_static
+
+ifeq ($(ENABLE_LOKI_RECOVERY),true)
+  LOCAL_CFLAGS += -DENABLE_LOKI
+  LOCAL_STATIC_LIBRARIES += libloki_recovery
+endif
 
 # This binary is in the recovery ramdisk, which is otherwise a copy of root.
 # It gets copied there in config/Makefile.  LOCAL_MODULE_TAGS suppresses
@@ -85,25 +127,37 @@ else
   LOCAL_SRC_FILES += $(BOARD_CUSTOM_RECOVERY_KEYMAPPING)
 endif
 
-LOCAL_STATIC_LIBRARIES += libext4_utils libz
+LOCAL_STATIC_LIBRARIES += libvoldclient libsdcard libminipigz libfsck_msdos
+LOCAL_STATIC_LIBRARIES += libmake_ext4fs libext4_utils_static libz libsparse_static
+
+ifeq ($(TARGET_USERIMAGES_USE_F2FS), true)
+LOCAL_CFLAGS += -DUSE_F2FS
+LOCAL_STATIC_LIBRARIES += libmake_f2fs libfsck_f2fs libfibmap_f2fs
+endif
+
 LOCAL_STATIC_LIBRARIES += libminzip libunz libmincrypt
 
 LOCAL_STATIC_LIBRARIES += libminizip libminadbd libedify libbusybox libmkyaffs2image libunyaffs liberase_image libdump_image libflash_image
+LOCAL_LDFLAGS += -Wl,--no-fatal-warnings
 
-LOCAL_STATIC_LIBRARIES += libdedupe libcrypto_static libcrecovery libflashutils libmtdutils libmmcutils libbmlutils
+LOCAL_STATIC_LIBRARIES += libfs_mgr libdedupe libcrypto_static libcrecovery libflashutils libmtdutils libmmcutils libbmlutils
 
 ifeq ($(BOARD_USES_BML_OVER_MTD),true)
 LOCAL_STATIC_LIBRARIES += libbml_over_mtd
 endif
 
-LOCAL_STATIC_LIBRARIES += libminui libpixelflinger_static libpng libcutils
+LOCAL_STATIC_LIBRARIES += libminui libpixelflinger_static libpng libcutils liblog
 LOCAL_STATIC_LIBRARIES += libstdc++ libc
 
-LOCAL_C_INCLUDES += system/extras/ext4_utils
+LOCAL_STATIC_LIBRARIES += libselinux
 
 include $(BUILD_EXECUTABLE)
 
-RECOVERY_LINKS := edify busybox flash_image dump_image mkyaffs2image unyaffs erase_image nandroid reboot volume setprop dedupe minizip
+RECOVERY_LINKS := bu make_ext4fs edify busybox flash_image dump_image mkyaffs2image unyaffs erase_image nandroid reboot volume setprop getprop start stop dedupe minizip setup_adbd fsck_msdos newfs_msdos vdc sdcard pigz
+
+ifeq ($(TARGET_USERIMAGES_USE_F2FS), true)
+RECOVERY_LINKS += mkfs.f2fs fsck.f2fs fibmap.f2fs
+endif
 
 # nc is provided by external/netcat
 RECOVERY_SYMLINKS := $(addprefix $(TARGET_RECOVERY_ROOT_OUT)/sbin/,$(RECOVERY_LINKS))
@@ -149,6 +203,8 @@ include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES := verifier_test.c verifier.c
 
+LOCAL_C_INCLUDES += system/extras/ext4_utils system/core/fs_mgr/include
+
 LOCAL_MODULE := verifier_test
 
 LOCAL_FORCE_STATIC_EXECUTABLE := true
@@ -174,4 +230,9 @@ include $(commands_recovery_local_path)/edify/Android.mk
 include $(commands_recovery_local_path)/updater/Android.mk
 include $(commands_recovery_local_path)/applypatch/Android.mk
 include $(commands_recovery_local_path)/utilities/Android.mk
+include $(commands_recovery_local_path)/su/Android.mk
+include $(commands_recovery_local_path)/voldclient/Android.mk
+include $(commands_recovery_local_path)/loki/Android.mk
 commands_recovery_local_path :=
+
+endif
